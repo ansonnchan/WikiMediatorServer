@@ -1,0 +1,33 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group 'CPEN 221'
+version 'STUDENT_TEMPLATE'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+application {
+    mainClass = 'fsft.wikipedia.example.JWiki' // You can change this later
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.7.0'
+    testImplementation 'org.junit.jupiter:junit-jupiter-params:5.7.0'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.7.0'
+    implementation 'org.jetbrains:annotations:24.0.0'
+    implementation 'org.slf4j:slf4j-simple:2.0.16'
+    implementation 'org.sqids:sqids:0.1.0'
+}
+
+test {
+    useJUnitPlatform()
+}
