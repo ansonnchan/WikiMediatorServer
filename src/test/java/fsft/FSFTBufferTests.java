@@ -3,6 +3,7 @@ package fsft;
 import fsft.fsftbuffer.Bufferable;
 import fsft.fsftbuffer.FSFTBuffer;
 import org.junit.jupiter.api.Test;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -44,7 +45,6 @@ public class FSFTBufferTests {
   }
  }
  
-
  
  @Test
  public void testConstructorValid() {

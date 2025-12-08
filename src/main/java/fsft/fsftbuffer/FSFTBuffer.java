@@ -13,14 +13,14 @@ import java.util.concurrent.locks.ReentrantLock;
  * the Bufferable interface. Objects are automatically removed when they become
  * stale (exceed timeout duration) or when the buffer reaches capacity (using
  * Least Recently Used eviction policy).
- * <p>
+ *
  * This buffer implements a caching abstraction with both spatial and temporal
  * constraints:
- * <p>
+ *
  * - Finite Space: Limited to a maximum capacity of non-stale objects
  * - Finite Time: Objects expire after a configurable timeout duration
- * <p>
- * <p>
+ *
+ *
  * When the buffer is full and a new object needs to be added, the Least Recently
  * Used (LRU) object is evicted based on the last access time (tl). Stale objects
  * are automatically removed and do not count toward capacity.
@@ -100,7 +100,7 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Creates a buffer with specified capacity and timeout duration.
-  * <p>
+  *
   * Effects: Constructs a new empty FSFTBuffer that can hold at most 'capacity'
   * non-stale objects, where objects become stale 'timeout' duration after their
   * last refresh (put or touch operation).
@@ -127,7 +127,7 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Creates a buffer with default capacity (32) and default timeout (180 seconds).
-  * <p>
+  *
   * Effects: Constructs a new empty FSFTBuffer with DEFAULT_CAPACITY and
   * DEFAULT_TIMEOUT.
   */
@@ -137,18 +137,18 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Adds or updates an object in the buffer.
-  * <p>
+  *
   * If the object (identified by b.id()) is already present in the buffer:
-  * <p>
+  *
   * - Updates the stored value to b
   * - Resets the timeout: new to = now + timeout
   * - Updates last access time: tl = now
-  * <p>
-  * <p>
+  *
+  *
   * If the object is new and the buffer is at capacity (after removing stale
   * entries), evicts the least recently accessed (LRU) entry before adding the
   * new object.
-  * <p>
+  *
   * Effects: Removes all stale entries from the buffer, then either updates the
   * existing entry for b.id() or adds a new entry (possibly after LRU eviction).
   * Sets tp = tl = now and to = now + timeout for the entry.
@@ -193,16 +193,16 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Retrieves an object from the buffer by its id and updates its last access time.
-  * <p>
+  *
   * If a fresh (non-stale) object with the given id exists:
-  * <p>
+  *
   * - Returns the object
   * - Updates last access time: tl = now
   * - Updates LRU position (moves to most recently used)
-  * <p>
-  * <p>
+  *
+  *
   * Does NOT affect the timeout time (to remains unchanged).
-  * <p>
+  *
   * Effects: Removes all stale entries, then retrieves and updates the last
   * access time for the entry with the given id.
   *
@@ -237,14 +237,14 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Refreshes the timeout for an object without affecting its LRU position.
-  * <p>
+  *
   * If a fresh object with the given id exists, extends its lifetime by
   * resetting: to = now + timeout. Does NOT update last access time (tl) or
   * LRU position.
-  * <p>
+  *
   * This operation is useful for keeping objects fresh without affecting
   * eviction order.
-  * <p>
+  *
   * Effects: Removes all stale entries, then updates the lastRefresh time
   * for the entry with the given id if it exists.
   *
@@ -276,11 +276,11 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Removes all entries that have exceeded their timeout duration.
-  * <p>
+  *
   * An entry is stale if: now > entry.lastRefresh + timeout
-  * <p>
+  *
   * Requires: The lock must be held by the calling thread.
-  * <p>
+  *
   * Effects: Removes all stale entries from the map.
   *
   * @param now the current time for staleness comparison
@@ -305,12 +305,12 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Evicts the least recently used (accessed) entry from the buffer.
-  * <p>
+  *
   * LRU determination:
   * - Primary: entry with earliest lastAccess time (smallest tl)
   * - Tiebreaker: entry with smallest accessOrder value
   * Requires: The lock must be held by the calling thread.
-  * <p>
+  * 
   * Effects: Removes the LRU entry from the map. If the map is empty,
   * does nothing.
   */

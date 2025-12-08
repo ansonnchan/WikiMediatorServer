@@ -104,11 +104,21 @@ public class WikiMediator {
    this.content = content;
   }
   
+  /**
+   * Returns the unique identifier for this page
+   *
+   * @return the title of the page, serving as the unique identifier
+   */
   @Override
   public String id() {
    return title;
   }
   
+  /**
+   * Returns the full content of this Wikipedia page
+   *
+   * @return the content of the page
+   */
   String getContent() {
    return content;
   }
