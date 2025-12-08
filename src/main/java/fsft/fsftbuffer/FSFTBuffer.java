@@ -2,73 +2,94 @@ package fsft.fsftbuffer;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * A thread-safe finite-space finite-time buffer that caches objects implementing
  * the Bufferable interface. Objects are automatically removed when they become
  * stale (exceed timeout duration) or when the buffer reaches capacity (using
  * Least Recently Used eviction policy).
+ * <p>
+ * This buffer implements a caching abstraction with both spatial and temporal
+ * constraints:
+ * <p>
+ * - Finite Space: Limited to a maximum capacity of non-stale objects
+ * - Finite Time: Objects expire after a configurable timeout duration
+ * <p>
+ * <p>
+ * When the buffer is full and a new object needs to be added, the Least Recently
+ * Used (LRU) object is evicted based on the last access time (tl). Stale objects
+ * are automatically removed and do not count toward capacity.
  *
- * <p>This implementation uses a read-write lock to allow concurrent reads while
- * ensuring exclusive access for writes and structural modifications.
- *
- * <p><b>Abstraction Function:</b>
- * AF(capacity, timeout, map) = A cache containing at most 'capacity' non-stale
- * entries, where each entry represents a Bufferable object that expires 'timeout'
- * duration after its last refresh. Entries are uniquely identified by their id()
- * and evicted using LRU policy when capacity is reached.
- *
- * <p><b>Rep Invariant:</b>
- * <ul>
- *   <li>capacity > 0</li>
- *   <li>timeout is non-null and positive (not zero or negative)</li>
- *   <li>map is non-null</li>
- *   <li>All keys in map equal their corresponding entry.value.id()</li>
- *   <li>Number of non-stale entries <= capacity after any public method completes</li>
- * </ul>
- *
- * <p><b>Thread Safety Argument:</b>
- * This class is thread-safe through the following mechanisms:
- * <ul>
- *   <li>All mutable shared state (map, insertionCounter) is guarded by a ReadWriteLock</li>
- *   <li>Read operations (get) acquire write lock since they modify lastAccess/accessOrder</li>
- *   <li>Write operations (put, touch) acquire write lock for exclusive access</li>
- *   <li>Internal Entry objects use volatile fields for visibility across threads</li>
- *   <li>ConcurrentHashMap provides additional thread-safety for map operations</li>
- *   <li>insertionCounter provides total ordering for operations, resolving timestamp ties</li>
- * </ul>
+ * @param <B> the type of bufferable objects stored in this buffer
  */
 public class FSFTBuffer<B extends Bufferable> {
- 
- /* Default buffer size is 32 objects */
  public static final int DEFAULT_CAPACITY = 32;
- 
- /* Default timeout value is 180 seconds */
  public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(180);
- 
  private final int capacity;
  private final Duration timeout;
- private final ConcurrentHashMap<String, Entry<B>> map;
- private final ReadWriteLock lock;
- private long insertionCounter = 0;  // For ordering when timestamps are equal
+ private final Map<String, Entry<B>> map;
+ private final Lock lock;
+ private long insertionCounter = 0;
+ 
+ /**
+  * Abstraction Function:
+  *  AF(capacity, timeout, map, insertionCounter) = A cache that stores at most
+  *  'capacity' non-stale Bufferable objects, where each object remains valid for
+  *  'timeout' duration from its last refresh (put/touch). The cache contains the
+  *  set of objects {map.get(id).value | id ∈ map.keySet() ∧ isNotStale(map.get(id))}.
+  *  Objects are ordered by access time for LRU eviction, with 'insertionCounter'
+  *  serving as a tiebreaker to maintain total ordering.
+  *
+  *  Representation Invariant:
+  *    - capacity > 0
+  *     - timeout != null && timeout > Duration.ZERO
+  *     - map != null
+  *     - lock != null
+  *     - For all entries e in map.values():
+  *         * e.value != null
+  *         * e.lastRefresh != null
+  *         * e.lastAccess != null
+  *         * e.value.id() equals the key that maps to e
+  *     - The number of non-stale entries in map <= capacity
+  *     - insertionCounter >= 0
+  *
+  *   Thread Safety Argument:
+  *     This class is thread-safe because:
+  *     1. All mutable state (map, insertionCounter) is guarded by the 'lock' field
+  *     2. All public methods acquire the lock before accessing or modifying shared state
+  *     3. All private helper methods that access shared state are suffixed with 'Unsafe'
+  *        and document that the lock must be held by the caller
+  *     4. The lock is always released in a finally block, ensuring release even if
+  *        exceptions occur
+  *     5. No references to internal mutable state escape to clients
+  *     6. Entry objects are immutable from the client's perspective (no getters exposed)
+  */
+ 
  
  /**
   * Represents a single entry in the buffer with timing metadata.
   *
-  * <p>Thread Safety: Fields are volatile to ensure visibility across threads.
-  * The Entry itself is immutable except for its timing fields.
+  * @param <V> the type of value stored in this entry
   */
  private static final class Entry<V> {
-  final V value;
-  volatile Instant lastRefresh;  // For staleness calculation
-  volatile Instant lastAccess;   // For LRU eviction
-  volatile long accessOrder;     // Tiebreaker when timestamps are equal
+  V value;
+  Instant lastRefresh;
+  Instant lastAccess;
+  long accessOrder;
   
+  /**
+   * Creates a new entry with the specified value and timing information.
+   *
+   * @param value      the bufferable object to store
+   * @param putTime    the time this entry was added (tp, lastRefresh)
+   * @param accessTime the time this entry was last accessed (tl, lastAccess)
+   * @param order      the insertion order for LRU tiebreaking
+   */
   Entry(V value, Instant putTime, Instant accessTime, long order) {
    this.value = value;
    this.lastRefresh = putTime;
@@ -79,11 +100,15 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Creates a buffer with specified capacity and timeout duration.
+  * <p>
+  * Effects: Constructs a new empty FSFTBuffer that can hold at most 'capacity'
+  * non-stale objects, where objects become stale 'timeout' duration after their
+  * last refresh (put or touch operation).
   *
-  * @param capacity the maximum number of non-stale objects the buffer can hold,
+  * @param capacity the maximum number of non-stale objects the buffer can hold;
   *                 must be positive
-  * @param timeout  the duration after which an object becomes stale if not refreshed,
-  *                 must be positive
+  * @param timeout  the duration after which an object becomes stale if not refreshed;
+  *                 must be positive and non-null
   * @throws IllegalArgumentException if capacity <= 0 or timeout is null/non-positive
   */
  public FSFTBuffer(int capacity, Duration timeout) {
@@ -96,30 +121,39 @@ public class FSFTBuffer<B extends Bufferable> {
   
   this.capacity = capacity;
   this.timeout = timeout;
-  this.map = new ConcurrentHashMap<>();
-  this.lock = new ReentrantReadWriteLock();
+  this.map = new HashMap<>();
+  this.lock = new ReentrantLock();
  }
  
  /**
   * Creates a buffer with default capacity (32) and default timeout (180 seconds).
+  * <p>
+  * Effects: Constructs a new empty FSFTBuffer with DEFAULT_CAPACITY and
+  * DEFAULT_TIMEOUT.
   */
  public FSFTBuffer() {
   this(DEFAULT_CAPACITY, DEFAULT_TIMEOUT);
  }
  
  /**
-  * Adds or updates an object in the buffer. If the object's id already exists,
-  * its timeout is refreshed but its last access time is preserved (per LRU spec).
-  * If the buffer is at capacity, the least recently accessed non-stale entry is evicted.
+  * Adds or updates an object in the buffer.
+  * <p>
+  * If the object (identified by b.id()) is already present in the buffer:
+  * <p>
+  * - Updates the stored value to b
+  * - Resets the timeout: new to = now + timeout
+  * - Updates last access time: tl = now
+  * <p>
+  * <p>
+  * If the object is new and the buffer is at capacity (after removing stale
+  * entries), evicts the least recently accessed (LRU) entry before adding the
+  * new object.
+  * <p>
+  * Effects: Removes all stale entries from the buffer, then either updates the
+  * existing entry for b.id() or adds a new entry (possibly after LRU eviction).
+  * Sets tp = tl = now and to = now + timeout for the entry.
   *
-  * <p>Spec Note: "The first put of an item into a cache does affect its access time.
-  * Subsequently, we will only consider reads (gets) as affecting the access time for
-  * LRU implementations."
-  *
-  * <p>Effects: Removes all stale entries, adds/updates the entry for b,
-  * evicts LRU entries if necessary to maintain capacity constraint.
-  *
-  * @param b the object to add, must be non-null
+  * @param b the object to add; must be non-null and b.id() must be non-null
   * @return true if the object was successfully added or updated, false if b is null
   */
  public boolean put(B b) {
@@ -127,51 +161,62 @@ public class FSFTBuffer<B extends Bufferable> {
    return false;
   }
   
-  lock.writeLock().lock();
+  lock.lock();
   try {
    Instant now = Instant.now();
    removeExpiredUnsafe(now);
    
    String id = b.id();
-   Entry<B> existing = map.get(id);
+   Entry<B> existingEntry = map.get(id);
    
-   // First put: sets initial access time and order
-   // Subsequent put: preserves existing access time and order (only get() updates it)
-   Instant accessTime = (existing != null) ? existing.lastAccess : now;
-   long accessOrder = (existing != null) ? existing.accessOrder : insertionCounter++;
-   
-   Entry<B> newEntry = new Entry<>(b, now, accessTime, accessOrder);
-   map.put(id, newEntry);
-   
-   // Evict LRU entries until we're at capacity
-   while (map.size() > capacity) {
-    evictLRUUnsafe();
+   if (existingEntry != null) {
+    
+    existingEntry.value = b;
+    existingEntry.lastRefresh = now;
+    existingEntry.lastAccess = now;
+    existingEntry.accessOrder = insertionCounter++;
+   } else {
+    
+    if (map.size() >= capacity) {
+     evictLRUUnsafe();
+    }
+    
+    Entry<B> newEntry = new Entry<>(b, now, now, insertionCounter++);
+    map.put(id, newEntry);
    }
    
    return true;
   } finally {
-   lock.writeLock().unlock();
+   lock.unlock();
   }
  }
  
  /**
-  * Retrieves an object from the buffer by its id and updates its last access time
-  * for LRU tracking.
+  * Retrieves an object from the buffer by its id and updates its last access time.
+  * <p>
+  * If a fresh (non-stale) object with the given id exists:
+  * <p>
+  * - Returns the object
+  * - Updates last access time: tl = now
+  * - Updates LRU position (moves to most recently used)
+  * <p>
+  * <p>
+  * Does NOT affect the timeout time (to remains unchanged).
+  * <p>
+  * Effects: Removes all stale entries, then retrieves and updates the last
+  * access time for the entry with the given id.
   *
-  * <p>Effects: Removes all stale entries, updates lastAccess time for the retrieved
-  * entry if found and non-stale.
-  *
-  * @param id the unique identifier of the object to retrieve, must be non-null
-  * @return the object with the given id
+  * @param id the unique identifier of the object to retrieve; must be non-null
+  * @return the non-stale object with the given id
   * @throws IllegalArgumentException if id is null
-  * @throws IllegalStateException if no non-stale object with the given id exists
+  * @throws IllegalStateException    if no fresh object with the given id exists
   */
  public B get(String id) {
   if (id == null) {
    throw new IllegalArgumentException("id cannot be null");
   }
   
-  lock.writeLock().lock();  // Write lock because we update lastAccess
+  lock.lock();
   try {
    Instant now = Instant.now();
    removeExpiredUnsafe(now);
@@ -181,35 +226,38 @@ public class FSFTBuffer<B extends Bufferable> {
     throw new IllegalStateException("Object with id '" + id + "' not in buffer");
    }
    
-   // Update last access time AND order for LRU tracking
    entry.lastAccess = now;
    entry.accessOrder = insertionCounter++;
+   
    return entry.value;
   } finally {
-   lock.writeLock().unlock();
+   lock.unlock();
   }
  }
  
  /**
   * Refreshes the timeout for an object without affecting its LRU position.
-  * The object's timeout is extended to (current_time + timeout_duration).
+  * <p>
+  * If a fresh object with the given id exists, extends its lifetime by
+  * resetting: to = now + timeout. Does NOT update last access time (tl) or
+  * LRU position.
+  * <p>
+  * This operation is useful for keeping objects fresh without affecting
+  * eviction order.
+  * <p>
+  * Effects: Removes all stale entries, then updates the lastRefresh time
+  * for the entry with the given id if it exists.
   *
-  * <p>Note: This does NOT update the last access time, so it doesn't affect
-  * LRU eviction priority.
-  *
-  * <p>Effects: Removes all stale entries, updates lastRefresh time for the
-  * entry with given id if found and non-stale.
-  *
-  * @param id the unique identifier of the object to touch, must be non-null
-  * @return true if the object was successfully touched, false if id is null
-  *         or no non-stale object with the given id exists
+  * @param id the unique identifier of the object to touch; must be non-null
+  * @return true if a fresh object was successfully touched, false if id is null
+  * or no fresh object with the given id exists
   */
  public boolean touch(String id) {
   if (id == null) {
    return false;
   }
   
-  lock.writeLock().lock();
+  lock.lock();
   try {
    Instant now = Instant.now();
    removeExpiredUnsafe(now);
@@ -219,20 +267,23 @@ public class FSFTBuffer<B extends Bufferable> {
     return false;
    }
    
-   // Only update lastRefresh, NOT lastAccess (per spec)
    entry.lastRefresh = now;
    return true;
   } finally {
-   lock.writeLock().unlock();
+   lock.unlock();
   }
  }
  
  /**
   * Removes all entries that have exceeded their timeout duration.
+  * <p>
+  * An entry is stale if: now > entry.lastRefresh + timeout
+  * <p>
+  * Requires: The lock must be held by the calling thread.
+  * <p>
+  * Effects: Removes all stale entries from the map.
   *
-  * <p>Requires: Write lock must be held by caller.
-  *
-  * @param now the current time for staleness calculation
+  * @param now the current time for staleness comparison
   */
  private void removeExpiredUnsafe(Instant now) {
   if (map.isEmpty()) {
@@ -244,8 +295,9 @@ public class FSFTBuffer<B extends Bufferable> {
    Map.Entry<String, Entry<B>> mapEntry = iter.next();
    Entry<B> entry = mapEntry.getValue();
    
-   Duration age = Duration.between(entry.lastRefresh, now);
-   if (age.compareTo(timeout) > 0) {
+   Instant expirationTime = entry.lastRefresh.plus(timeout);
+   
+   if (now.isAfter(expirationTime)) {
     iter.remove();
    }
   }
@@ -253,11 +305,14 @@ public class FSFTBuffer<B extends Bufferable> {
  
  /**
   * Evicts the least recently used (accessed) entry from the buffer.
-  * Uses lastAccess timestamp first, then accessOrder as tiebreaker.
-  *
-  * <p>Requires: Write lock must be held by caller.
-  * <p>Effects: Removes one entry with the oldest lastAccess timestamp
-  * (or lowest accessOrder if timestamps are equal).
+  * <p>
+  * LRU determination:
+  * - Primary: entry with earliest lastAccess time (smallest tl)
+  * - Tiebreaker: entry with smallest accessOrder value
+  * Requires: The lock must be held by the calling thread.
+  * <p>
+  * Effects: Removes the LRU entry from the map. If the map is empty,
+  * does nothing.
   */
  private void evictLRUUnsafe() {
   if (map.isEmpty()) {
@@ -271,7 +326,6 @@ public class FSFTBuffer<B extends Bufferable> {
   for (Map.Entry<String, Entry<B>> mapEntry : map.entrySet()) {
    Entry<B> entry = mapEntry.getValue();
    
-   // Compare: first by timestamp, then by order
    boolean isOlder = false;
    if (oldestAccess == null) {
     isOlder = true;

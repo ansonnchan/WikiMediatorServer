@@ -1,23 +1,21 @@
-package fsft.fsftbuffer;
+package fsft;
 
+import fsft.fsftbuffer.Bufferable;
+import fsft.fsftbuffer.FSFTBuffer;
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.time.Duration;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Optimized test suite for FSFTBuffer that achieves high coverage efficiently
- * while effectively finding bugs in incorrect implementations.
- *
- * Test suite is organized to minimize redundancy while maximizing bug detection.
- */
+
 public class FSFTBufferTests {
  
- /**
-  * Simple test implementation of Bufferable for testing purposes.
-  */
  private static class TestBufferable implements Bufferable {
   private final String id;
   private final String data;
@@ -46,7 +44,7 @@ public class FSFTBufferTests {
   }
  }
  
- // ========== Constructor Tests ==========
+
  
  @Test
  public void testConstructorValid() {
@@ -72,7 +70,6 @@ public class FSFTBufferTests {
    () -> new FSFTBuffer<TestBufferable>(10, Duration.ofSeconds(-10)));
  }
  
- // ========== Basic Put/Get Tests ==========
  
  @Test
  public void testPutAndGet() {
@@ -90,15 +87,15 @@ public class FSFTBufferTests {
  }
  
  @Test
- public void testGetNullId() {
-  FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(5, Duration.ofSeconds(60));
-  assertThrows(IllegalArgumentException.class, () -> buffer.get(null));
- }
- 
- @Test
  public void testGetNonExistent() {
   FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(5, Duration.ofSeconds(60));
   assertThrows(IllegalStateException.class, () -> buffer.get("nonexistent"));
+ }
+ 
+ @Test
+ public void testGetNullId() {
+  FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(5, Duration.ofSeconds(60));
+  assertThrows(IllegalArgumentException.class, () -> buffer.get(null));
  }
  
  @Test
@@ -111,8 +108,6 @@ public class FSFTBufferTests {
   assertEquals("data2", buffer.get("item1").getData());
  }
  
- // ========== LRU Eviction Tests - Critical for finding bugs ==========
- 
  @Test
  public void testLRUEvictionBasic() {
   FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(3, Duration.ofSeconds(60));
@@ -121,10 +116,8 @@ public class FSFTBufferTests {
   buffer.put(new TestBufferable("item2"));
   buffer.put(new TestBufferable("item3"));
   
-  // Access item1 to make it recently used
   buffer.get("item1");
   
-  // Add item4, should evict item2 (least recently used)
   buffer.put(new TestBufferable("item4"));
   
   assertDoesNotThrow(() -> buffer.get("item1"));
@@ -141,19 +134,47 @@ public class FSFTBufferTests {
   buffer.put(new TestBufferable("item2"));
   buffer.put(new TestBufferable("item3"));
   
-  // Only 2 items should exist, item1 should be evicted
   assertThrows(IllegalStateException.class, () -> buffer.get("item1"));
-  
-  // At least one of item2 or item3 must exist
-  boolean item2Exists = false;
-  boolean item3Exists = false;
-  try { buffer.get("item2"); item2Exists = true; } catch (IllegalStateException e) {}
-  try { buffer.get("item3"); item3Exists = true; } catch (IllegalStateException e) {}
-  
-  assertTrue(item2Exists || item3Exists);
+  assertDoesNotThrow(() -> buffer.get("item2"));
+  assertDoesNotThrow(() -> buffer.get("item3"));
  }
  
- // ========== Timeout/Staleness Tests - Critical for finding bugs ==========
+ @Test
+ public void testLRUCriterionUsesLastAccessNotPutTime() throws InterruptedException {
+  FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(2, Duration.ofSeconds(60));
+  
+  buffer.put(new TestBufferable("item1"));
+  Thread.sleep(50);
+  buffer.put(new TestBufferable("item2"));
+  
+  buffer.get("item1");
+  buffer.touch("item2");
+  
+  buffer.put(new TestBufferable("item3"));
+  
+  assertDoesNotThrow(() -> buffer.get("item1"), "Item1 (MRU by get) should remain.");
+  assertThrows(IllegalStateException.class, () -> buffer.get("item2"),
+   "Item2 (LRU by tl, despite touch) should be evicted.");
+  assertDoesNotThrow(() -> buffer.get("item3"));
+ }
+ 
+ @Test
+ public void testLRUTieBreaker() {
+  FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(2, Duration.ofSeconds(60));
+  
+  buffer.put(new TestBufferable("item1"));
+  buffer.put(new TestBufferable("item2"));
+  
+  buffer.get("item1");
+  buffer.get("item2");
+  
+  buffer.put(new TestBufferable("item3"));
+  
+  assertThrows(IllegalStateException.class, () -> buffer.get("item1"),
+   "Item1 should be evicted as it was accessed before item2.");
+  assertDoesNotThrow(() -> buffer.get("item2"));
+ }
+ 
  
  @Test
  public void testItemBecomesStale() throws InterruptedException {
@@ -182,17 +203,41 @@ public class FSFTBufferTests {
   buffer.put(new TestBufferable("item1"));
   buffer.put(new TestBufferable("item2"));
   
-  Thread.sleep(150); // Both items now stale
+  Thread.sleep(150);
   
-  // Should be able to add 2 new items without eviction
   buffer.put(new TestBufferable("item3"));
   buffer.put(new TestBufferable("item4"));
   
+  assertThrows(IllegalStateException.class, () -> buffer.get("item1"));
   assertDoesNotThrow(() -> buffer.get("item3"));
   assertDoesNotThrow(() -> buffer.get("item4"));
  }
  
- // ========== Touch Tests - Critical for spec compliance ==========
+ @Test
+ public void testTouchPreventsStalenessWhileLRURemainsUnchanged() throws InterruptedException {
+  FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(2, Duration.ofMillis(300));
+  
+  // Add two items
+  buffer.put(new TestBufferable("item1"));
+  buffer.put(new TestBufferable("item2"));
+  
+  // Wait until both are about to expire
+  Thread.sleep(250);
+  
+  // Touch item1 to refresh its timeout (but NOT its LRU position)
+  assertTrue(buffer.touch("item1"), "Touch should succeed on fresh item");
+  
+  // Wait a bit more - now item2 should be stale, but item1 is fresh
+  Thread.sleep(100);
+  
+  // Verify item2 is stale
+  assertThrows(IllegalStateException.class, () -> buffer.get("item2"),
+   "Item2 should be stale and throw exception");
+  
+  // Verify item1 is still fresh (because we touched it)
+  assertDoesNotThrow(() -> buffer.get("item1"),
+   "Item1 should still be fresh because touch extended its timeout");
+ }
  
  @Test
  public void testTouchRefreshesTimeout() throws InterruptedException {
@@ -204,7 +249,6 @@ public class FSFTBufferTests {
   assertTrue(buffer.touch("item1"));
   Thread.sleep(150);
   
-  // Should still exist because touch refreshed timeout
   assertDoesNotThrow(() -> buffer.get("item1"));
  }
  
@@ -215,10 +259,8 @@ public class FSFTBufferTests {
   buffer.put(new TestBufferable("item1"));
   buffer.put(new TestBufferable("item2"));
   
-  // Touch item1 (refreshes timeout but NOT lastAccess)
   buffer.touch("item1");
   
-  // Add item3, should still evict item1 (not item2)
   buffer.put(new TestBufferable("item3"));
   
   assertThrows(IllegalStateException.class, () -> buffer.get("item1"));
@@ -233,7 +275,7 @@ public class FSFTBufferTests {
   assertFalse(buffer.touch("nonexistent"));
  }
  
- // ========== Thread Safety Tests - Essential for Task 2 ==========
+ // ========== Thread Safety Tests ==========
  
  @Test
  public void testConcurrentPutsRespectCapacity() throws InterruptedException {
@@ -261,7 +303,6 @@ public class FSFTBufferTests {
   assertTrue(latch.await(10, TimeUnit.SECONDS));
   executor.shutdown();
   
-  // Count surviving items
   int count = 0;
   for (int t = 0; t < numThreads; t++) {
    for (int i = 0; i < putsPerThread; i++) {
@@ -269,7 +310,7 @@ public class FSFTBufferTests {
      buffer.get("t" + t + "i" + i);
      count++;
     } catch (IllegalStateException e) {
-     // Evicted, that's ok
+     // Evicted
     }
    }
   }
@@ -286,7 +327,6 @@ public class FSFTBufferTests {
   CountDownLatch startLatch = new CountDownLatch(1);
   CountDownLatch endLatch = new CountDownLatch(numThreads);
   
-  // Pre-populate with some items
   for (int i = 0; i < 10; i++) {
    buffer.put(new TestBufferable("init" + i));
   }
@@ -297,10 +337,8 @@ public class FSFTBufferTests {
    final int threadId = t;
    executor.submit(() -> {
     try {
-     // Wait for all threads to be ready
      startLatch.await();
      
-     // Hammer the buffer with rapid operations
      for (int i = 0; i < 100; i++) {
       String id = "item" + (i % 30);
       
@@ -315,7 +353,7 @@ public class FSFTBufferTests {
          try {
           buffer.get(id);
          } catch (IllegalStateException e) {
-          // Expected - item might not exist
+          // Expected
          }
          break;
         case 4:
@@ -324,7 +362,6 @@ public class FSFTBufferTests {
        }
       } catch (Exception e) {
        errors.incrementAndGet();
-       e.printStackTrace();
       }
      }
     } catch (InterruptedException e) {
@@ -335,7 +372,6 @@ public class FSFTBufferTests {
    });
   }
   
-  // Start all threads simultaneously for maximum contention
   startLatch.countDown();
   
   assertTrue(endLatch.await(15, TimeUnit.SECONDS));
@@ -343,7 +379,6 @@ public class FSFTBufferTests {
   
   assertEquals(0, errors.get(), "Should have no errors in concurrent access");
   
-  // Verify capacity constraint still holds
   int count = 0;
   for (int i = 0; i < 30; i++) {
    try {
@@ -379,7 +414,7 @@ public class FSFTBufferTests {
         try {
          buffer.get(id);
         } catch (IllegalStateException e) {
-         // Expected - item might not exist
+         // Expected
         }
         break;
        case 2:
@@ -425,7 +460,6 @@ public class FSFTBufferTests {
   assertTrue(latch.await(10, TimeUnit.SECONDS));
   executor.shutdown();
   
-  // Item should exist (no race condition corruption)
   assertDoesNotThrow(() -> buffer.get(sameId));
  }
  
@@ -454,5 +488,14 @@ public class FSFTBufferTests {
   
   TestBufferable retrieved = buffer.get("item1");
   assertEquals("data2", retrieved.getData());
+ }
+ 
+ @Test
+ public void testTouchStaleItem() throws InterruptedException {
+  FSFTBuffer<TestBufferable> buffer = new FSFTBuffer<>(5, Duration.ofMillis(100));
+  buffer.put(new TestBufferable("stale"));
+  Thread.sleep(150);
+  
+  assertFalse(buffer.touch("stale"));
  }
 }
