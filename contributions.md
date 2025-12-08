@@ -1,1 +1,1 @@
-
+No partner. 
