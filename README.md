@@ -81,6 +81,18 @@ For Windows, run these commands
    ./gradlew test
 
 
+## Testing Considerations
+
+This project includes over 60 JUnit tests covering server logic, buffer operations, and concurrency scenarios.
+
+Important:
+
+Some tests may occasionally fail on different machines.
+
+This is typically due to variations in thread scheduling or CPU timing and does not indicate a fundamental problem with the server.
+
+Running the tests multiple times usually confirms consistent correctness.
+
 ## License and Copyright
 
 This project is developed as part of the CPEN 221 course at the University of British Columbia. All code and materials are the intellectual property of UBC and the course instructors unless otherwise stated.
